@@ -1,2 +1,9 @@
 /参考
 /账单
+
+.venv/
+__pycache__/
+*.pyc
+data/
+*.db
+.env

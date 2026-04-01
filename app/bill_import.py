@@ -147,6 +147,12 @@ def parse_alipay_csv(raw: bytes) -> tuple[BillParseResult | None, str | None]:
     if idx["time"] is None or idx["flow"] is None or idx["amt"] is None:
         return None, "支付宝 CSV 缺少必要列（交易时间、收/支、金额）"
 
+    def alipay_cell(row: list[str], key: str) -> str:
+        j = idx.get(key)
+        if j is None or j >= len(row):
+            return ""
+        return (row[j] or "").strip()
+
     out: list[BillImportRow] = []
     skipped_neutral = 0
     skipped_bad_status = 0
@@ -157,35 +163,30 @@ def parse_alipay_csv(raw: bytes) -> tuple[BillParseResult | None, str | None]:
     for row in rows_list[header_idx + 1 :]:
         if not row or all(not (c or "").strip() for c in row):
             continue
-        def g(key: str) -> str:
-            j = idx.get(key)
-            if j is None or j >= len(row):
-                return ""
-            return (row[j] or "").strip()
 
-        flow = g("flow")
+        flow = alipay_cell(row, "flow")
         if flow == "不计收支":
             skipped_neutral += 1
             continue
         if flow not in ("支出", "收入"):
             continue
 
-        status = g("status")
+        status = alipay_cell(row, "status")
         if status not in ALIPAY_OK_STATUS:
             skipped_bad_status += 1
             continue
 
-        amt = _parse_alipay_amount(g("amt"))
+        amt = _parse_alipay_amount(alipay_cell(row, "amt"))
         if amt is None or amt <= 0:
             skipped_zero_amount += 1
             continue
 
-        transacted_on = _alipay_datetime_to_date(g("time"))
+        transacted_on = _alipay_datetime_to_date(alipay_cell(row, "time"))
         if not transacted_on:
             skipped_no_date += 1
             continue
 
-        ext = _strip_id(g("tid"))
+        ext = _strip_id(alipay_cell(row, "tid"))
         if not ext:
             skipped_no_external_id += 1
             continue
@@ -196,18 +197,19 @@ def parse_alipay_csv(raw: bytes) -> tuple[BillParseResult | None, str | None]:
             continue
 
         typ = "expense" if flow == "支出" else "income"
+        mid_s = alipay_cell(row, "mid")
         out.append(
             BillImportRow(
                 type=typ,
                 amount_cents=amount_cents,
                 transacted_on=transacted_on,
                 external_id=ext,
-                bill_category=g("cat"),
-                bill_counterparty=g("who"),
-                bill_product=g("product"),
-                bill_payment_method=g("pay"),
-                bill_merchant_no=_strip_id(g("mid")) or g("mid").strip(),
-                bill_export_note=g("note"),
+                bill_category=alipay_cell(row, "cat"),
+                bill_counterparty=alipay_cell(row, "who"),
+                bill_product=alipay_cell(row, "product"),
+                bill_payment_method=alipay_cell(row, "pay"),
+                bill_merchant_no=_strip_id(mid_s) or mid_s.strip(),
+                bill_export_note=alipay_cell(row, "note"),
             )
         )
 
@@ -276,6 +278,15 @@ def parse_wechat_xlsx(raw: bytes) -> tuple[BillParseResult | None, str | None]:
     if idx["time"] is None or idx["flow"] is None or idx["amt"] is None:
         return None, "微信 XLSX 缺少必要列（交易时间、收/支、金额(元)）"
 
+    def wechat_cell(row: tuple[Any, ...], key: str) -> str:
+        j = idx.get(key)
+        if j is None or j >= len(row):
+            return ""
+        v = row[j]
+        if v is None:
+            return ""
+        return str(v).strip()
+
     out: list[BillImportRow] = []
     skipped_neutral = 0
     skipped_bad_status = 0
@@ -287,28 +298,19 @@ def parse_wechat_xlsx(raw: bytes) -> tuple[BillParseResult | None, str | None]:
         if not row or all(c is None or str(c).strip() == "" for c in row):
             continue
 
-        def g(key: str) -> str:
-            j = idx.get(key)
-            if j is None or j >= len(row):
-                return ""
-            v = row[j]
-            if v is None:
-                return ""
-            return str(v).strip()
-
-        flow = g("flow")
+        flow = wechat_cell(row, "flow")
         if flow == "中性交易":
             skipped_neutral += 1
             continue
         if flow not in ("支出", "收入"):
             continue
 
-        status = g("status")
+        status = wechat_cell(row, "status")
         if status not in WECHAT_OK_STATUS:
             skipped_bad_status += 1
             continue
 
-        amt = _parse_wechat_amount(g("amt"))
+        amt = _parse_wechat_amount(wechat_cell(row, "amt"))
         if amt is None or amt <= 0:
             skipped_zero_amount += 1
             continue
@@ -319,7 +321,7 @@ def parse_wechat_xlsx(raw: bytes) -> tuple[BillParseResult | None, str | None]:
             skipped_no_date += 1
             continue
 
-        ext = _strip_id(g("tid"))
+        ext = _strip_id(wechat_cell(row, "tid"))
         if not ext:
             skipped_no_external_id += 1
             continue
@@ -330,19 +332,19 @@ def parse_wechat_xlsx(raw: bytes) -> tuple[BillParseResult | None, str | None]:
             continue
 
         typ = "expense" if flow == "支出" else "income"
-        mid_raw = g("mid")
+        mid_raw = wechat_cell(row, "mid")
         out.append(
             BillImportRow(
                 type=typ,
                 amount_cents=amount_cents,
                 transacted_on=transacted_on,
                 external_id=ext,
-                bill_category=g("cat"),
-                bill_counterparty=g("who"),
-                bill_product=g("product"),
-                bill_payment_method=g("pay"),
+                bill_category=wechat_cell(row, "cat"),
+                bill_counterparty=wechat_cell(row, "who"),
+                bill_product=wechat_cell(row, "product"),
+                bill_payment_method=wechat_cell(row, "pay"),
                 bill_merchant_no=_strip_id(mid_raw) or mid_raw,
-                bill_export_note=g("note"),
+                bill_export_note=wechat_cell(row, "note"),
             )
         )
 

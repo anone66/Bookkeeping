@@ -1649,7 +1649,8 @@ body {
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     max-height: min(88vh, 100%);
     overflow-y: auto;
-    z-index: 180;
+    /* 高于 .fab(201)，避免底部「确定」与悬浮新增钮重叠 */
+    z-index: 210;
     box-shadow: 0 -12px 48px var(--shadow-tint);
   }
 

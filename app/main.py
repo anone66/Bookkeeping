@@ -626,16 +626,6 @@ def api_summary(
             """,
             (user.id,),
         ).fetchone()
-        row = conn.execute(
-            """
-            SELECT
-              COALESCE(SUM(CASE WHEN type = 'expense' THEN amount_cents END), 0) AS exp_c,
-              COALESCE(SUM(CASE WHEN type = 'income' THEN amount_cents END), 0) AS inc_c
-            FROM transactions
-            WHERE user_id = ?
-            """,
-            (user.id,),
-        ).fetchone()
         if where_sql:
             row = conn.execute(
                 """
@@ -648,6 +638,8 @@ def api_summary(
                 + where_sql,
                 (user.id, *where_params),
             ).fetchone()
+        else:
+            row = overall
     exp_c, inc_c = int(row["exp_c"]), int(row["inc_c"])
     o_exp_c, o_inc_c = int(overall["exp_c"]), int(overall["inc_c"])
     te, ti = from_cents(exp_c), from_cents(inc_c)

@@ -1,36 +1,3 @@
-const $ = (sel, el = document) => el.querySelector(sel);
-
-/** 默认浅色（参考 Amethyst）；深色为 data-theme="dark" */
-function initTheme() {
-  const saved = localStorage.getItem("theme");
-  const btn = $("#btn-theme");
-  if (saved === "dark") {
-    document.documentElement.setAttribute("data-theme", "dark");
-    if (btn) btn.textContent = "☀️";
-  } else {
-    document.documentElement.removeAttribute("data-theme");
-    if (btn) btn.textContent = "🌙";
-  }
-}
-initTheme();
-
-const themeBtn = $("#btn-theme");
-if (themeBtn) {
-  themeBtn.addEventListener("click", () => {
-    const isDark =
-      document.documentElement.getAttribute("data-theme") === "dark";
-    if (isDark) {
-      document.documentElement.removeAttribute("data-theme");
-      localStorage.setItem("theme", "light");
-      themeBtn.textContent = "🌙";
-    } else {
-      document.documentElement.setAttribute("data-theme", "dark");
-      localStorage.setItem("theme", "dark");
-      themeBtn.textContent = "☀️";
-    }
-  });
-}
-
 function setPeriodLabel() {
   const el = $("#period-label");
   if (!el) return;
@@ -63,40 +30,6 @@ function fmtDate(ymd) {
   const d = new Date(`${ymd}T00:00:00`);
   if (isNaN(d.getTime())) return ymd;
   return d.toLocaleDateString("zh-CN");
-}
-
-async function api(path, opts = {}) {
-  const r = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...opts.headers },
-    credentials: "include",
-    ...opts,
-  });
-  const text = await r.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { detail: text || r.statusText };
-  }
-  if (!r.ok) {
-    const msg =
-      (data && data.detail) ||
-      (typeof data === "object" && JSON.stringify(data)) ||
-      r.statusText;
-    throw new Error(
-      Array.isArray(msg) ? msg.map((m) => m.msg || m).join("; ") : String(msg)
-    );
-  }
-  return data;
-}
-
-function toast(msg, err = false) {
-  const el = $("#toast");
-  el.textContent = msg;
-  el.className = `toast${err ? " err" : ""}`;
-  el.classList.remove("hidden");
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.add("hidden"), 2800);
 }
 
 const state = {
@@ -209,8 +142,9 @@ function toYmd(date) {
 function setFilterToCurrentMonth() {
   const now = new Date();
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   state.startDate = toYmd(first);
-  state.endDate = toYmd(now);
+  state.endDate = toYmd(last);
   const sd = $("#filter-start-date");
   const ed = $("#filter-end-date");
   if (sd) sd.value = state.startDate;
@@ -346,11 +280,19 @@ async function openSourceModal(mode = "overall") {
   setSourceTabs();
   await loadSourceData(mode);
   renderSourceModal();
-  $("#source-modal")?.classList.remove("hidden");
+  const sm = $("#source-modal");
+  if (sm) {
+    sm.classList.remove("hidden");
+    sm.setAttribute("aria-hidden", "false");
+  }
 }
 
 function closeSourceModal() {
-  $("#source-modal")?.classList.add("hidden");
+  const sm = $("#source-modal");
+  if (sm) {
+    sm.classList.add("hidden");
+    sm.setAttribute("aria-hidden", "true");
+  }
 }
 
 function showApp(me) {
@@ -446,7 +388,7 @@ function renderTx(tx) {
   body.querySelector(".btn-save").addEventListener("click", async (e) => {
     e.stopPropagation();
     const note = body.querySelector(".edit-note").value;
-    const amount = parseFloat(body.querySelector(".edit-amt").value, 10);
+    const amount = parseFloat(body.querySelector(".edit-amt").value);
     if (!(amount > 0)) {
       toast("金额须为大于 0 的数字", true);
       return;
@@ -517,14 +459,6 @@ function billMetaHtml(tx) {
   </div>`;
 }
 
-function escapeHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function escapeAttr(s) {
   return escapeHtml(s).replace(/'/g, "&#39;");
 }
@@ -561,12 +495,20 @@ $("#btn-logout").addEventListener("click", async () => {
 
 function openImportModal() {
   setAddSheetOpen(false);
-  $("#import-modal")?.classList.remove("hidden");
+  const m = $("#import-modal");
+  if (m) {
+    m.classList.remove("hidden");
+    m.setAttribute("aria-hidden", "false");
+  }
   updateImportFileAccept();
 }
 
 function closeImportModal() {
-  $("#import-modal")?.classList.add("hidden");
+  const m = $("#import-modal");
+  if (m) {
+    m.classList.add("hidden");
+    m.setAttribute("aria-hidden", "true");
+  }
   const fin = $("#import-file");
   if (fin) {
     fin.value = "";
@@ -648,7 +590,7 @@ $("#form-add").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const type = fd.get("type_in");
-  const amount = parseFloat(fd.get("amount"), 10);
+  const amount = parseFloat(fd.get("amount"));
   const note = (fd.get("note") || "").toString();
   const transacted_on = (fd.get("transacted_on") || "").toString();
   if (!(amount > 0)) {
@@ -801,21 +743,5 @@ document.body.addEventListener("click", (e) => {
     !e.target.closest("#btn-date-panel")
   ) {
     setPanelOpen(false);
-  }
-  const btn = e.target.closest(".btn-eye");
-  if (btn) {
-    const wrap = btn.closest(".input-wrap");
-    if (wrap) {
-      const inp = wrap.querySelector(".pwd-input");
-      if (inp) {
-        if (inp.type === "password") {
-          inp.type = "text";
-          btn.textContent = "visibility";
-        } else {
-          inp.type = "password";
-          btn.textContent = "visibility_off";
-        }
-      }
-    }
   }
 });
