@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>紫晶流水 · 收支记账</title>
+  <link rel="icon" href="/favicon.png" type="image/png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="ambient-glow ambient-glow--1" aria-hidden="true"></div>
+  <div class="ambient-glow ambient-glow--2" aria-hidden="true"></div>
+
+  <!-- 登录 -->
+  <div id="view-login" class="login-shell">
+    <header class="shell-header">
+      <a href="/" class="brand">
+        <span class="brand-mark">紫晶流水</span>
+        <span class="brand-sub">收支记账</span>
+      </a>
+    </header>
+    <main class="login-main">
+      <div class="login-card-wrap">
+        <div class="login-card-am">
+          <h2>欢迎回来</h2>
+          <p class="login-lead">请使用管理员分配的账号登录，以查看与您隔离的账本数据。</p>
+          <form id="form-login" class="form">
+            <div class="field">
+              <span>登录名</span>
+              <div class="input-wrap">
+                <input type="text" name="username" required autocomplete="username" pattern="[a-zA-Z0-9@.]{3,64}" title="3–64 位，仅字母、数字、@、." placeholder="您的登录名" />
+                <span class="material-symbols-outlined" aria-hidden="true">alternate_email</span>
+              </div>
+            </div>
+            <div class="field">
+              <span>密码</span>
+              <div class="input-wrap">
+                <input type="password" name="password" required autocomplete="current-password" minlength="6" pattern="[a-zA-Z0-9@.]{6,}" title="至少 6 位，仅字母、数字、@、." placeholder="••••••••" class="pwd-input" />
+                <button type="button" class="btn-eye material-symbols-outlined" aria-label="显示/隐藏密码" title="显示/隐藏密码">visibility_off</button>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.5rem;">登录</button>
+          </form>
+          <p class="login-footer-note">首次部署请在服务器环境变量中配置首轮管理员账号。</p>
+          <div class="login-decor" aria-hidden="true"><span class="line"></span><span class="dot"></span><span class="line"></span></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 已登录：仪表盘 -->
+  <div id="view-app" class="hidden">
+    <header class="shell-header">
+      <a href="/" class="brand">
+        <span class="brand-mark">紫晶流水</span>
+        <span class="brand-sub">收支记账</span>
+      </a>
+      <div class="shell-actions">
+        <span id="whoami" class="whoami"></span>
+        <button type="button" id="btn-theme" class="btn btn-ghost btn-icon" aria-label="切换浅色或深色主题" title="切换主题">🌙</button>
+        <a id="link-admin" class="btn btn-ghost hidden" href="/admin">管理端</a>
+        <button type="button" id="btn-logout" class="btn btn-ghost">登出</button>
+      </div>
+    </header>
+
+    <div class="dashboard">
+      <header class="page-head">
+        <h1>财务概览</h1>
+        <p class="subtitle">您的结余与流水 · <strong id="period-label">—</strong></p>
+      </header>
+
+      <section class="bento" aria-label="筛选汇总">
+        <div class="bento-card bento-card--expense">
+          <div class="bento-icon"><span class="material-symbols-outlined">trending_down</span></div>
+          <p class="bento-label">筛选消费</p>
+          <p class="bento-value" id="sum-expense">¥0.00</p>
+        </div>
+        <div class="bento-card bento-card--income">
+          <div class="bento-icon"><span class="material-symbols-outlined">trending_up</span></div>
+          <p class="bento-label">筛选收入</p>
+          <p class="bento-value" id="sum-income">¥0.00</p>
+        </div>
+        <div class="bento-card bento-card--net">
+          <div class="bento-icon"><span class="material-symbols-outlined">account_balance_wallet</span></div>
+          <p class="bento-label">筛选净值</p>
+          <p class="bento-value" id="sum-net">¥0.00</p>
+        </div>
+      </section>
+      <section class="bento bento-secondary" aria-label="总体汇总">
+        <div class="bento-card">
+          <p class="bento-label">总体消费</p>
+          <p class="bento-value" id="sum-overall-expense">¥0.00</p>
+        </div>
+        <div class="bento-card">
+          <p class="bento-label">总体收入</p>
+          <p class="bento-value" id="sum-overall-income">¥0.00</p>
+        </div>
+        <div class="bento-card">
+          <p class="bento-label">总体净值</p>
+          <p class="bento-value" id="sum-overall-net">¥0.00</p>
+        </div>
+      </section>
+      <div class="summary-actions">
+        <button type="button" id="btn-import-open" class="btn btn-ghost">
+          导入账单
+        </button>
+        <button type="button" id="btn-source-locate" class="btn btn-ghost">
+          定位金额来源
+        </button>
+      </div>
+
+      <div class="split">
+        <section class="activity-panel">
+          <div class="panel-title">
+            <h2>最近流水</h2>
+            <div class="filters filters-date">
+              <button type="button" id="btn-date-panel" class="btn btn-ghost date-trigger">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span id="date-trigger-text">本月</span>
+              </button>
+              <div id="date-panel" class="date-panel hidden" role="dialog" aria-label="日期范围筛选">
+                <div class="date-panel-shortcuts">
+                  <button type="button" class="btn btn-ghost btn-quick-range" data-months="1">近1个月</button>
+                  <button type="button" class="btn btn-ghost btn-quick-range" data-months="3">近3个月</button>
+                  <button type="button" class="btn btn-ghost btn-quick-range" data-months="6">近半年</button>
+                  <button type="button" class="btn btn-ghost" id="filter-reset">本月</button>
+                </div>
+                <div class="date-panel-main">
+                  <div class="date-range-wrap">
+                    <label class="date-field">
+                      <span>开始</span>
+                      <input type="date" id="filter-start-date" aria-label="开始日期" />
+                    </label>
+                    <span class="date-sep">至</span>
+                    <label class="date-field">
+                      <span>结束</span>
+                      <input type="date" id="filter-end-date" aria-label="结束日期" />
+                    </label>
+                  </div>
+                  <div class="date-panel-actions">
+                    <button type="button" id="filter-cancel" class="btn btn-ghost">取消</button>
+                    <button type="button" id="filter-apply" class="btn btn-primary">确定</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="empty-wrap" class="empty-state hidden">
+            <span class="material-symbols-outlined">history</span>
+            <h3>暂无记录</h3>
+            <p id="empty-text">本周期还没有记账。点击右下角加号填写金额、日期与说明，即可新增一笔。</p>
+          </div>
+          <ul id="tx-list" class="tx-list"></ul>
+        </section>
+
+        <aside class="form-panel" id="add-form-panel" aria-label="新增一笔">
+          <div class="form-sheet-header">
+            <h2>新增一笔</h2>
+            <button type="button" id="btn-add-sheet-close" class="btn btn-ghost btn-icon form-sheet-close" aria-label="关闭新增面板">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </div>
+          <form id="form-add" class="form">
+            <div class="field">
+              <span>类型</span>
+              <div class="type-pill-wrap" role="group" aria-label="收支类型">
+                <label>
+                  <input type="radio" name="type_in" value="expense" checked />
+                  <span>消费</span>
+                </label>
+                <label>
+                  <input type="radio" name="type_in" value="income" />
+                  <span>收入</span>
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <span>金额（元）</span>
+              <div class="amount-input">
+                <span class="currency">¥</span>
+                <input type="number" name="amount" step="0.01" min="0.01" required placeholder="0.00" />
+              </div>
+            </div>
+            <div class="field">
+              <span>交易日期</span>
+              <input type="date" name="transacted_on" id="input-transacted-on" required />
+            </div>
+            <div class="field">
+              <span>补充说明（选填）</span>
+              <textarea name="note" rows="3" placeholder="备注或用途说明…"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%; border-radius: var(--radius-lg); text-transform: none; font-size: 1rem; letter-spacing: 0;">记入</button>
+          </form>
+        </aside>
+      </div>
+    </div>
+    <div id="add-sheet-backdrop" class="sheet-backdrop hidden" aria-hidden="true"></div>
+    <button type="button" id="btn-add-fab" class="fab" aria-label="新增一笔" title="新增一笔">
+      <span class="material-symbols-outlined">add</span>
+    </button>
+  </div>
+
+  <div id="confirm-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-hidden="true">
+    <div class="modal-backdrop" id="confirm-modal-backdrop"></div>
+    <div class="modal-card">
+      <h3 id="confirm-modal-title"></h3>
+      <p id="confirm-modal-message"></p>
+      <div class="modal-actions">
+        <button type="button" id="confirm-modal-cancel" class="btn btn-ghost">取消</button>
+        <button type="button" id="confirm-modal-ok" class="btn btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="import-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="import-modal-title" aria-hidden="true">
+    <div class="modal-backdrop" id="import-modal-backdrop"></div>
+    <div class="modal-card">
+      <h3 id="import-modal-title">导入账单</h3>
+      <p class="import-hint" style="margin-bottom:1.25rem;">选择平台后上传官方导出文件（支付宝 CSV / 微信 XLSX）。</p>
+      <div class="form">
+        <div class="field">
+          <span>平台</span>
+          <select id="import-platform" aria-label="导入平台">
+            <option value="alipay">支付宝</option>
+            <option value="wechat">微信支付</option>
+          </select>
+        </div>
+        <div class="field">
+          <span>文件</span>
+          <label class="file-upload-wrap">
+            <input type="file" id="import-file" aria-label="选择账单文件" class="sr-only" />
+            <span class="btn btn-ghost btn-file-trigger" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">选择文件</span>
+            <span id="import-file-name" class="file-name">未选择文件</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions" style="margin-top: 1.5rem;">
+        <button type="button" id="import-modal-close" class="btn btn-ghost">取消</button>
+        <button type="button" id="btn-import" class="btn btn-primary">开始导入</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="source-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="source-modal-title" aria-hidden="true">
+    <div class="modal-backdrop" id="source-modal-backdrop"></div>
+    <div class="modal-card source-modal-card">
+      <h3 id="source-modal-title">金额来源定位</h3>
+      <div class="source-toolbar">
+        <div class="source-tabs">
+          <button type="button" id="source-tab-overall" class="btn btn-ghost active">总体</button>
+          <button type="button" id="source-tab-filtered" class="btn btn-ghost">当前筛选</button>
+        </div>
+        <input type="text" id="source-search" placeholder="搜索年份或月份，如 2026 或 2026-03" />
+      </div>
+      <div class="source-section">
+        <h4>Top 5 月份贡献</h4>
+        <ul id="source-top-list" class="source-list"></ul>
+      </div>
+      <div class="source-section">
+        <h4>按年汇总（可展开）</h4>
+        <div id="source-year-list" class="source-year-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="source-modal-close" class="btn btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/confirm.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
