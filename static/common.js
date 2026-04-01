@@ -33,9 +33,23 @@ if (themeBtn) {
   });
 }
 
+function readCookie(name) {
+  const parts = String(document.cookie || "").split(";").map((s) => s.trim());
+  for (const p of parts) {
+    if (p.startsWith(`${name}=`)) return decodeURIComponent(p.slice(name.length + 1));
+  }
+  return "";
+}
+
 async function api(path, opts = {}) {
+  const method = (opts.method || "GET").toUpperCase();
+  const hdrs = { "Content-Type": "application/json", ...opts.headers };
+  if (method === "POST" || method === "PATCH" || method === "DELETE") {
+    const tok = readCookie("ledger_csrf");
+    if (tok) hdrs["X-CSRF-Token"] = tok;
+  }
   const r = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...opts.headers },
+    headers: hdrs,
     credentials: "include",
     ...opts,
   });
@@ -58,14 +72,48 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function toast(msg, err = false) {
+let _busyDepth = 0;
+
+function beginBusy() {
+  _busyDepth++;
+  const bar = $("#top-progress");
+  if (bar) {
+    bar.classList.remove("hidden");
+    bar.setAttribute("aria-hidden", "false");
+  }
+  document.body.classList.add("global-busy");
+}
+
+function endBusy() {
+  _busyDepth = Math.max(0, _busyDepth - 1);
+  if (_busyDepth === 0) {
+    const bar = $("#top-progress");
+    if (bar) {
+      bar.classList.add("hidden");
+      bar.setAttribute("aria-hidden", "true");
+    }
+    document.body.classList.remove("global-busy");
+  }
+}
+
+function dismissToast() {
   const el = $("#toast");
   if (!el) return;
-  el.textContent = msg;
+  clearTimeout(toast._t);
+  toast._t = null;
+  el.classList.add("hidden");
+}
+
+function toast(msg, err = false) {
+  const el = $("#toast");
+  const textEl = $("#toast-text");
+  if (!el) return;
+  if (textEl) textEl.textContent = msg;
+  else el.textContent = msg;
   el.className = `toast${err ? " err" : ""}`;
   el.classList.remove("hidden");
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.add("hidden"), 2800);
+  toast._t = setTimeout(dismissToast, 2800);
 }
 
 function escapeHtml(s) {
@@ -77,20 +125,28 @@ function escapeHtml(s) {
 }
 
 document.body.addEventListener("click", (e) => {
-  const btn = e.target.closest(".btn-eye");
-  if (btn) {
-    const wrap = btn.closest(".input-wrap");
+  const eye = e.target.closest(".btn-eye");
+  if (eye) {
+    const wrap = eye.closest(".input-wrap");
     if (wrap) {
       const inp = wrap.querySelector(".pwd-input");
       if (inp) {
         if (inp.type === "password") {
           inp.type = "text";
-          btn.textContent = "visibility";
+          eye.textContent = "visibility";
         } else {
           inp.type = "password";
-          btn.textContent = "visibility_off";
+          eye.textContent = "visibility_off";
         }
       }
     }
+  }
+  const tclose = e.target.closest(".toast-close");
+  if (tclose) {
+    dismissToast();
+    return;
+  }
+  if (e.target.closest("#toast") && !$("#toast")?.classList.contains("hidden")) {
+    dismissToast();
   }
 });

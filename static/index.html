@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <div id="top-progress" class="top-progress hidden" aria-hidden="true"></div>
   <div class="ambient-glow ambient-glow--1" aria-hidden="true"></div>
   <div class="ambient-glow ambient-glow--2" aria-hidden="true"></div>
 
@@ -35,11 +36,11 @@
             <div class="field">
               <span>密码</span>
               <div class="input-wrap">
-                <input type="password" name="password" required autocomplete="current-password" minlength="6" pattern="[a-zA-Z0-9@.]{6,}" title="至少 6 位，仅字母、数字、@、." placeholder="••••••••" class="pwd-input" />
+                <input type="password" name="password" required autocomplete="current-password" minlength="6" maxlength="128" pattern="[a-zA-Z0-9@.!#$%^&amp;*()_+=~-]{6,128}" title="至少 6 位：字母、数字、@ . 与常用符号 ! # $ % ^ &amp; * ( ) - _ + = ~ 等" placeholder="••••••••" class="pwd-input" />
                 <button type="button" class="btn-eye material-symbols-outlined" aria-label="显示/隐藏密码" title="显示/隐藏密码">visibility_off</button>
               </div>
             </div>
-            <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.5rem;">登录</button>
+            <button type="submit" id="btn-login-submit" class="btn btn-primary btn-loading" style="width:100%; margin-top:0.5rem;">登录</button>
           </form>
           <p class="login-footer-note">首次部署请在服务器环境变量中配置首轮管理员账号。</p>
           <div class="login-decor" aria-hidden="true"><span class="line"></span><span class="dot"></span><span class="line"></span></div>
@@ -57,6 +58,7 @@
       </a>
       <div class="shell-actions">
         <span id="whoami" class="whoami"></span>
+        <button type="button" id="btn-change-password" class="btn btn-ghost" style="font-size:0.85rem;">修改密码</button>
         <button type="button" id="btn-theme" class="btn btn-ghost btn-icon" aria-label="切换浅色或深色主题" title="切换主题">🌙</button>
         <a id="link-admin" class="btn btn-ghost hidden" href="/admin">管理端</a>
         <button type="button" id="btn-logout" class="btn btn-ghost">登出</button>
@@ -101,6 +103,9 @@
         </div>
       </section>
       <div class="summary-actions">
+        <button type="button" id="btn-export-csv" class="btn btn-ghost">
+          导出 CSV
+        </button>
         <button type="button" id="btn-import-open" class="btn btn-ghost">
           导入账单
         </button>
@@ -113,6 +118,9 @@
         <section class="activity-panel">
           <div class="panel-title">
             <h2>最近流水</h2>
+            <div class="tx-search-wrap">
+              <input type="search" id="input-tx-search" placeholder="搜索备注、对方、商品…" autocomplete="off" aria-label="搜索交易" />
+            </div>
             <div class="filters filters-date">
               <button type="button" id="btn-date-panel" class="btn btn-ghost date-trigger">
                 <span class="material-symbols-outlined">calendar_month</span>
@@ -151,6 +159,10 @@
             <p id="empty-text">本周期还没有记账。点击右下角加号填写金额、日期与说明，即可新增一笔。</p>
           </div>
           <ul id="tx-list" class="tx-list"></ul>
+          <div id="tx-list-more-wrap" class="tx-list-more-wrap hidden">
+            <button type="button" id="btn-load-more" class="btn btn-ghost btn-loading">加载更多</button>
+            <span id="tx-list-count-hint" class="tx-list-count-hint"></span>
+          </div>
         </section>
 
         <aside class="form-panel" id="add-form-panel" aria-label="新增一笔">
@@ -189,7 +201,7 @@
               <span>补充说明（选填）</span>
               <textarea name="note" rows="3" placeholder="备注或用途说明…"></textarea>
             </div>
-            <button type="submit" class="btn btn-primary" style="width:100%; border-radius: var(--radius-lg); text-transform: none; font-size: 1rem; letter-spacing: 0;">记入</button>
+            <button type="submit" id="btn-form-add-submit" class="btn btn-primary btn-loading" style="width:100%; border-radius: var(--radius-lg); text-transform: none; font-size: 1rem; letter-spacing: 0;">记入</button>
           </form>
         </aside>
       </div>
@@ -236,7 +248,7 @@
       </div>
       <div class="modal-actions" style="margin-top: 1.5rem;">
         <button type="button" id="import-modal-close" class="btn btn-ghost">取消</button>
-        <button type="button" id="btn-import" class="btn btn-primary">开始导入</button>
+        <button type="button" id="btn-import" class="btn btn-primary btn-loading">开始导入</button>
       </div>
     </div>
   </div>
@@ -266,7 +278,37 @@
     </div>
   </div>
 
-  <div id="toast" class="toast hidden" role="status"></div>
+  <div id="password-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="password-modal-title" aria-hidden="true">
+    <div class="modal-backdrop" id="password-modal-backdrop"></div>
+    <div class="modal-card">
+      <h3 id="password-modal-title">修改密码</h3>
+      <form id="form-password" class="form" style="margin-top:1rem;">
+        <div class="field">
+          <span>当前密码</span>
+          <div class="input-wrap">
+            <input type="password" name="old_password" required autocomplete="current-password" minlength="6" maxlength="128" class="pwd-input" />
+            <button type="button" class="btn-eye material-symbols-outlined" aria-label="显示/隐藏密码">visibility_off</button>
+          </div>
+        </div>
+        <div class="field">
+          <span>新密码</span>
+          <div class="input-wrap">
+            <input type="password" name="new_password" required autocomplete="new-password" minlength="6" maxlength="128" pattern="[a-zA-Z0-9@.!#$%^&amp;*()_+=~-]{6,128}" class="pwd-input" />
+            <button type="button" class="btn-eye material-symbols-outlined" aria-label="显示/隐藏密码">visibility_off</button>
+          </div>
+        </div>
+        <div class="modal-actions" style="margin-top:1.25rem;">
+          <button type="button" id="password-modal-cancel" class="btn btn-ghost">取消</button>
+          <button type="submit" id="btn-password-submit" class="btn btn-primary btn-loading">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status">
+    <span id="toast-text"></span>
+    <button type="button" class="toast-close" aria-label="关闭">×</button>
+  </div>
   <script src="/confirm.js"></script>
   <script src="/common.js"></script>
   <script src="/app.js"></script>

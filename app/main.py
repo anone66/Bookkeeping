@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import os
 import re
@@ -15,8 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import bcrypt
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,10 +33,33 @@ STATIC_DIR = ROOT / "static"
 
 SESSION_COOKIE = "ledger_session"
 SESSION_DAYS = 7
-COOKIE_KWARGS = {"httponly": True, "samesite": "lax", "path": "/"}
+COOKIE_PATH = "/"
+COOKIE_SAMESITE = "lax"
+CSRF_COOKIE = "ledger_csrf"
+CSRF_HEADER = "X-CSRF-Token"
+COOKIE_KWARGS = {"httponly": True, "samesite": COOKIE_SAMESITE, "path": COOKIE_PATH}
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9@.]{3,64}$")
-PASSWORD_RE = re.compile(r"^[a-zA-Z0-9@.]{6,128}$")
+# 字母、数字、@ . 及常用特殊字符（与前端 pattern 同步）
+PASSWORD_RE = re.compile(r"^[a-zA-Z0-9@.!#$%^&*()\-_+=~]{6,128}$")
+
+LOGIN_RATE_WINDOW_SEC = 60.0
+LOGIN_RATE_MAX_FAILURES = 5
+_login_fail_buckets: dict[str, list[float]] = {}
+_lazy_session_clean_counter = 0
+LAZY_SESSION_CLEAN_EVERY = 50
+
+SECURITY_CSP = (
+    "default-src 'self'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'; "
+    "img-src 'self' data:; "
+    "script-src 'self'; "
+    "style-src 'self' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "connect-src 'self'; "
+    "form-action 'self'"
+)
 
 
 def _now_iso() -> str:
@@ -69,7 +94,94 @@ def validate_username(username: str) -> str:
 
 def validate_password(password: str) -> None:
     if not PASSWORD_RE.fullmatch(password):
-        raise ValueError("密码须至少 6 位，仅字母、数字、@、.")
+        raise ValueError(
+            "密码须至少 6 位，可为字母、数字、@ . 及 ! # $ % ^ & * ( ) - _ + = ~ 等常用符号"
+        )
+
+
+def _request_is_secure(request: Request) -> bool:
+    if request.url.scheme == "https":
+        return True
+    forwarded = (request.headers.get("x-forwarded-proto") or "").strip().lower()
+    return forwarded.split(",")[0].strip() == "https"
+
+
+def _session_cookie_kwargs(request: Request) -> dict:
+    return {
+        **COOKIE_KWARGS,
+        "secure": _request_is_secure(request),
+    }
+
+
+def _csrf_cookie_kwargs(request: Request) -> dict:
+    return {
+        "httponly": False,
+        "samesite": COOKIE_SAMESITE,
+        "path": COOKIE_PATH,
+        "secure": _request_is_secure(request),
+    }
+
+
+def _csrf_tokens_match(cookie_val: str | None, header_val: str | None) -> bool:
+    if not cookie_val or not header_val:
+        return False
+    if len(cookie_val) != len(header_val):
+        return False
+    return secrets.compare_digest(cookie_val, header_val)
+
+
+def _csrf_check_required(path: str, method: str) -> bool:
+    if method not in ("POST", "PATCH", "DELETE"):
+        return False
+    if not path.startswith("/api/"):
+        return False
+    if path == "/api/auth/login":
+        return False
+    return True
+
+
+def _client_rate_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _login_failures_in_window(request: Request) -> list[float]:
+    key = _client_rate_key(request)
+    now = time.time()
+    bucket = _login_fail_buckets.setdefault(key, [])
+    cutoff = now - LOGIN_RATE_WINDOW_SEC
+    while bucket and bucket[0] < cutoff:
+        bucket.pop(0)
+    return bucket
+
+
+def _login_rate_precheck(request: Request) -> None:
+    if len(_login_failures_in_window(request)) >= LOGIN_RATE_MAX_FAILURES:
+        raise HTTPException(status_code=429, detail="登录尝试过于频繁，请稍后再试")
+
+
+def _login_rate_record_failure(request: Request) -> None:
+    bucket = _login_failures_in_window(request)
+    bucket.append(time.time())
+
+
+def _login_rate_clear(request: Request) -> None:
+    _login_fail_buckets.pop(_client_rate_key(request), None)
+
+
+def _attach_security_headers(response: Response) -> None:
+    response.headers.setdefault("Content-Security-Policy", SECURITY_CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+
+
+def delete_expired_sessions(conn: sqlite3.Connection, now_ts: int | None = None) -> None:
+    ts = int(time.time()) if now_ts is None else now_ts
+    conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (ts,))
 
 
 def check_username(username: str) -> str:
@@ -105,6 +217,7 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     try:
         yield conn
         conn.commit()
@@ -257,6 +370,7 @@ def init_db() -> None:
         )
         bootstrap_if_no_users(conn)
         migrate_transactions(conn)
+        delete_expired_sessions(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_tx_user_created
@@ -327,6 +441,11 @@ class MeOut(BaseModel):
     role: str
 
 
+class MePasswordBody(BaseModel):
+    old_password: str
+    new_password: str
+
+
 class AdminUserCreate(BaseModel):
     username: str
     password: str
@@ -356,11 +475,22 @@ class TransactionCreate(BaseModel):
 class TransactionPatch(BaseModel):
     note: str | None = None
     amount: float | None = Field(default=None, gt=0, description="元，正数；不传则不修改")
+    type: str | None = Field(default=None, pattern="^(expense|income)$")
+    transacted_on: str | None = Field(
+        default=None,
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="交易发生日期 YYYY-MM-DD",
+    )
 
     @model_validator(mode="after")
     def at_least_one_field(self):
-        if self.note is None and self.amount is None:
-            raise ValueError("至少需要修改说明或金额之一")
+        if (
+            self.note is None
+            and self.amount is None
+            and self.type is None
+            and self.transacted_on is None
+        ):
+            raise ValueError("至少需要修改说明、金额、类型或交易日期之一")
         return self
 
 
@@ -419,7 +549,35 @@ def _period_clause(
     )
 
 
+def _keyword_clause(keyword: str | None) -> tuple[str, tuple[str, ...]]:
+    if keyword is None:
+        return "", ()
+    k = keyword.strip()
+    if not k:
+        return "", ()
+    esc = k.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pat = f"%{esc}%"
+    clause = (
+        " AND (note LIKE ? ESCAPE '\\' OR IFNULL(bill_counterparty,'') LIKE ? ESCAPE '\\' "
+        "OR IFNULL(bill_product,'') LIKE ? ESCAPE '\\')"
+    )
+    return clause, (pat, pat, pat)
+
+
+def _tx_where_suffix(
+    year: int | None,
+    month: int | None,
+    start_date: str | None,
+    end_date: str | None,
+    keyword: str | None,
+) -> tuple[str, tuple[str, ...]]:
+    where_sql, where_params, _ = _period_clause(year, month, start_date, end_date)
+    kw_sql, kw_params = _keyword_clause(keyword)
+    return where_sql + kw_sql, where_params + kw_params
+
+
 def get_current_user(request: Request) -> CurrentUser:
+    global _lazy_session_clean_counter
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         raise HTTPException(status_code=401, detail="未登录")
@@ -435,6 +593,9 @@ def get_current_user(request: Request) -> CurrentUser:
             (token, now_ts),
         ).fetchone()
         if row and row["is_active"]:
+            _lazy_session_clean_counter += 1
+            if _lazy_session_clean_counter % LAZY_SESSION_CLEAN_EVERY == 0:
+                delete_expired_sessions(conn, now_ts)
             return CurrentUser(
                 id=row["id"], username=row["username"], role=row["role"]
             )
@@ -472,8 +633,38 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Personal Ledger", version="0.2.0", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def security_and_csrf_middleware(request: Request, call_next):
+    if _csrf_check_required(request.url.path, request.method):
+        if not _csrf_tokens_match(
+            request.cookies.get(CSRF_COOKIE),
+            request.headers.get(CSRF_HEADER),
+        ):
+            resp = JSONResponse({"detail": "CSRF 校验失败"}, status_code=403)
+            _attach_security_headers(resp)
+            if CSRF_COOKIE not in request.cookies:
+                resp.set_cookie(
+                    CSRF_COOKIE,
+                    secrets.token_urlsafe(32),
+                    max_age=SESSION_DAYS * 86400,
+                    **_csrf_cookie_kwargs(request),
+                )
+            return resp
+    response = await call_next(request)
+    _attach_security_headers(response)
+    if CSRF_COOKIE not in request.cookies:
+        response.set_cookie(
+            CSRF_COOKIE,
+            secrets.token_urlsafe(32),
+            max_age=SESSION_DAYS * 86400,
+            **_csrf_cookie_kwargs(request),
+        )
+    return response
+
+
 @app.post("/api/auth/login")
-def api_login(body: LoginBody, response: Response):
+def api_login(request: Request, body: LoginBody, response: Response):
+    _login_rate_precheck(request)
     username = check_username(body.username)
     with get_conn() as conn:
         row = conn.execute(
@@ -481,11 +672,19 @@ def api_login(body: LoginBody, response: Response):
             (username,),
         ).fetchone()
         if not row or not row["is_active"]:
+            _login_rate_record_failure(request)
             raise HTTPException(status_code=401, detail="用户名或密码错误")
         if not verify_password(body.password, row["password_hash"]):
+            _login_rate_record_failure(request)
             raise HTTPException(status_code=401, detail="用户名或密码错误")
         token = create_session(conn, row["id"])
-    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_DAYS * 86400, **COOKIE_KWARGS)
+    _login_rate_clear(request)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_DAYS * 86400,
+        **_session_cookie_kwargs(request),
+    )
     return {"ok": True}
 
 
@@ -494,13 +693,39 @@ def api_logout(request: Request, response: Response):
     token = request.cookies.get(SESSION_COOKIE)
     with get_conn() as conn:
         revoke_session(conn, token)
-    response.delete_cookie(SESSION_COOKIE, **COOKIE_KWARGS)
+    sk = _session_cookie_kwargs(request)
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path=COOKIE_PATH,
+        httponly=True,
+        samesite=COOKIE_SAMESITE,
+        secure=sk["secure"],
+    )
     return {"ok": True}
 
 
 @app.get("/api/me", response_model=MeOut)
 def api_me(user: CurrentUser = Depends(get_current_user)):
     return MeOut(id=user.id, username=user.username, role=user.role)
+
+
+@app.post("/api/me/password")
+def api_me_password(body: MePasswordBody, user: CurrentUser = Depends(get_current_user)):
+    check_password(body.new_password)
+    now = _now_iso()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user.id,)
+        ).fetchone()
+        if not row or not verify_password(body.old_password, row["password_hash"]):
+            raise HTTPException(status_code=400, detail="旧密码不正确")
+        conn.execute(
+            """
+            UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
+            """,
+            (hash_password(body.new_password), now, user.id),
+        )
+    return {"ok": True}
 
 
 @app.get("/api/admin/users")
@@ -602,6 +827,20 @@ def api_admin_patch(
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
     }
+
+
+@app.delete("/api/admin/users/{user_id}")
+def api_admin_delete(user_id: int, admin: CurrentUser = Depends(require_admin)):
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="不能删除当前登录的管理员")
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    return {"ok": True}
 
 
 @app.get("/api/summary", response_model=SummaryOut)
@@ -710,9 +949,54 @@ def api_list(
     month: int | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    keyword: str | None = None,
     user: CurrentUser = Depends(get_current_user),
 ):
-    where_sql, where_params, _ = _period_clause(year, month, start_date, end_date)
+    where_sql, where_params = _tx_where_suffix(
+        year, month, start_date, end_date, keyword
+    )
+    offset = (page - 1) * page_size
+    with get_conn() as conn:
+        total = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM transactions WHERE user_id = ?" + where_sql,
+                (user.id, *where_params),
+            ).fetchone()["n"]
+        )
+        rows = conn.execute(
+            """
+            SELECT * FROM transactions
+            WHERE user_id = ?
+            """
+            + where_sql
+            + """
+            ORDER BY transacted_on DESC, created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user.id, *where_params, page_size, offset),
+        ).fetchall()
+    return {
+        "items": [row_to_tx(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@app.get("/api/transactions/export")
+def api_transactions_export(
+    year: int | None = None,
+    month: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    keyword: str | None = None,
+    user: CurrentUser = Depends(get_current_user),
+):
+    where_sql, where_params = _tx_where_suffix(
+        year, month, start_date, end_date, keyword
+    )
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -725,7 +1009,53 @@ def api_list(
             """,
             (user.id, *where_params),
         ).fetchall()
-    return [row_to_tx(r) for r in rows]
+    buf = io.StringIO()
+    buf.write("\ufeff")
+    w = csv.writer(buf)
+    w.writerow(
+        [
+            "类型",
+            "金额(元)",
+            "交易日期",
+            "备注",
+            "导入平台",
+            "外部单号",
+            "分类",
+            "交易对方",
+            "商品说明",
+            "支付方式",
+            "商户单号",
+            "导出备注",
+            "创建时间",
+        ]
+    )
+    plat_map = {"alipay": "支付宝", "wechat": "微信"}
+    type_map = {"expense": "消费", "income": "收入"}
+    for r in rows:
+        plat = r["import_platform"]
+        plat_zh = plat_map.get(plat, plat or "")
+        w.writerow(
+            [
+                type_map.get(r["type"], r["type"]),
+                from_cents(int(r["amount_cents"])),
+                r["transacted_on"] or "",
+                r["note"] or "",
+                plat_zh,
+                r["external_id"] or "",
+                r["bill_category"] or "",
+                r["bill_counterparty"] or "",
+                r["bill_product"] or "",
+                r["bill_payment_method"] or "",
+                r["bill_merchant_no"] or "",
+                r["bill_export_note"] or "",
+                r["created_at"] or "",
+            ]
+        )
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="ledger-export.csv"'},
+    )
 
 
 @app.post("/api/transactions")
@@ -858,6 +1188,8 @@ def api_patch(
             raise HTTPException(status_code=404, detail="记录不存在")
         note = row["note"]
         ac = row["amount_cents"]
+        tx_type = row["type"]
+        transacted_on = row["transacted_on"]
         if body.note is not None:
             note = body.note.strip()
         if body.amount is not None:
@@ -865,14 +1197,24 @@ def api_patch(
                 ac = to_cents(body.amount)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
+        if body.type is not None:
+            tx_type = body.type
+        if body.transacted_on is not None:
+            try:
+                datetime.strptime(body.transacted_on, "%Y-%m-%d")
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail="交易日期格式须为 YYYY-MM-DD"
+                ) from e
+            transacted_on = body.transacted_on
         now = _now_iso()
         conn.execute(
             """
             UPDATE transactions
-            SET note = ?, amount_cents = ?, updated_at = ?
+            SET note = ?, amount_cents = ?, type = ?, transacted_on = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
-            (note, ac, now, tx_id, user.id),
+            (note, ac, tx_type, transacted_on, now, tx_id, user.id),
         )
         row = conn.execute(
             "SELECT * FROM transactions WHERE id = ? AND user_id = ?",

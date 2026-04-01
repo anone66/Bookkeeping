@@ -38,6 +38,10 @@ const state = {
   panelOpen: false,
   sourceMode: "overall",
   sourceData: { overall: null, filtered: null },
+  keyword: "",
+  txPage: 1,
+  txTotal: 0,
+  txItems: [],
 };
 
 function isAddSheetLayout() {
@@ -78,6 +82,31 @@ function buildQuery() {
   }
   const s = p.toString();
   return s ? `?${s}` : "";
+}
+
+function buildTxQuery(page = 1, pageSize = 50) {
+  const p = new URLSearchParams();
+  if (state.startDate && state.endDate) {
+    p.set("start_date", state.startDate);
+    p.set("end_date", state.endDate);
+  }
+  const kw = (state.keyword || "").trim();
+  if (kw) p.set("keyword", kw);
+  p.set("page", String(page));
+  p.set("page_size", String(pageSize));
+  return `?${p.toString()}`;
+}
+
+function updateLoadMoreUI() {
+  const wrap = $("#tx-list-more-wrap");
+  const btn = $("#btn-load-more");
+  const hint = $("#tx-list-count-hint");
+  if (!wrap || !btn || !hint) return;
+  const hasRows = state.txTotal > 0;
+  wrap.classList.toggle("hidden", !hasRows);
+  const hasMore = state.txItems.length < state.txTotal;
+  btn.classList.toggle("hidden", !hasMore);
+  hint.textContent = `已加载 ${state.txItems.length} / ${state.txTotal} 条`;
 }
 
 function setDefaultTransactedOn() {
@@ -311,41 +340,60 @@ function showLogin() {
   $("#link-admin").classList.add("hidden");
 }
 
-async function refresh() {
+async function refresh(opts = { busy: true }) {
   const q = buildQuery();
-  const [summary, list] = await Promise.all([
-    api(`/api/summary${q}`),
-    api(`/api/transactions${q}`),
-  ]);
-  $("#sum-expense").textContent = fmtMoney(summary.total_expense);
-  $("#sum-income").textContent = fmtMoney(summary.total_income);
-  const netEl = $("#sum-net");
-  netEl.textContent = fmtMoney(summary.net);
-  netEl.classList.toggle("negative", summary.net < 0);
-  $("#sum-overall-expense").textContent = fmtMoney(summary.overall_expense);
-  $("#sum-overall-income").textContent = fmtMoney(summary.overall_income);
-  const overallNet = $("#sum-overall-net");
-  overallNet.textContent = fmtMoney(summary.overall_net);
-  overallNet.classList.toggle("negative", summary.overall_net < 0);
+  const tq = buildTxQuery(1, 50);
+  if (opts.busy) beginBusy();
+  try {
+    const [summary, txPayload] = await Promise.all([
+      api(`/api/summary${q}`),
+      api(`/api/transactions${tq}`),
+    ]);
+    $("#sum-expense").textContent = fmtMoney(summary.total_expense);
+    $("#sum-income").textContent = fmtMoney(summary.total_income);
+    const netEl = $("#sum-net");
+    netEl.textContent = fmtMoney(summary.net);
+    netEl.classList.toggle("negative", summary.net < 0);
+    $("#sum-overall-expense").textContent = fmtMoney(summary.overall_expense);
+    $("#sum-overall-income").textContent = fmtMoney(summary.overall_income);
+    const overallNet = $("#sum-overall-net");
+    overallNet.textContent = fmtMoney(summary.overall_net);
+    overallNet.classList.toggle("negative", summary.overall_net < 0);
 
-  const emptyWrap = $("#empty-wrap");
-  emptyWrap.classList.toggle("hidden", list.length > 0);
-  const emptyText = $("#empty-text");
-  if (emptyText) {
-    emptyText.textContent =
-      summary.has_filter
-        ? "当前年份月份范围内暂无记录，可调整筛选或新增交易。"
-        : "还没有任何记录，点击右下角加号填写金额、日期与说明即可新增。";
+    state.txTotal = txPayload.total;
+    state.txPage = 1;
+    state.txItems = txPayload.items;
+
+    const emptyWrap = $("#empty-wrap");
+    emptyWrap.classList.toggle("hidden", state.txTotal > 0);
+    const emptyText = $("#empty-text");
+    if (emptyText) {
+      const kw = (state.keyword || "").trim();
+      if (kw) {
+        emptyText.textContent =
+          "没有匹配当前关键词的交易，可修改搜索词或调整日期范围。";
+      } else if (summary.has_filter) {
+        emptyText.textContent =
+          "当前日期范围内暂无记录，可调整筛选或新增交易。";
+      } else {
+        emptyText.textContent =
+          "还没有任何记录，点击右下角加号填写金额、日期与说明即可新增。";
+      }
+    }
+    renderGroupedList(state.txItems);
+    updateLoadMoreUI();
+    state.sourceData.overall = null;
+    state.sourceData.filtered = null;
+  } finally {
+    if (opts.busy) endBusy();
   }
-  renderGroupedList(list);
-  state.sourceData.overall = null;
-  state.sourceData.filtered = null;
 }
 
 function renderTx(tx) {
   const li = document.createElement("li");
   li.className = "tx-item";
   li.dataset.id = String(tx.id);
+  const typeName = `edit_type_${tx.id}`;
 
   const head = document.createElement("div");
   head.className = "tx-head";
@@ -361,10 +409,26 @@ function renderTx(tx) {
   const body = document.createElement("div");
   body.className = "tx-body";
   body.innerHTML = `
-    <p class="tx-meta">交易日期：${escapeHtml(fmtDate(tx.transacted_on))}</p>
     <p class="tx-meta">创建：${escapeHtml(fmtTime(tx.created_at))}
       ${tx.updated_at !== tx.created_at ? ` · 更新：${escapeHtml(fmtTime(tx.updated_at))}` : ""}</p>
     ${billMetaHtml(tx)}
+    <div class="field">
+      <span>类型</span>
+      <div class="type-pill-wrap" role="group" aria-label="收支类型">
+        <label>
+          <input type="radio" name="${typeName}" value="expense" ${tx.type === "expense" ? "checked" : ""} />
+          <span>消费</span>
+        </label>
+        <label>
+          <input type="radio" name="${typeName}" value="income" ${tx.type === "income" ? "checked" : ""} />
+          <span>收入</span>
+        </label>
+      </div>
+    </div>
+    <div class="field">
+      <span>交易日期</span>
+      <input type="date" class="edit-date" value="${escapeAttr(tx.transacted_on || "")}" />
+    </div>
     <div class="field">
       <span>补充说明</span>
       <textarea class="edit-note" rows="2">${escapeHtml(tx.note || "")}</textarea>
@@ -374,8 +438,8 @@ function renderTx(tx) {
       <input type="number" class="edit-amt" step="0.01" min="0.01" value="${escapeAttr(String(tx.amount))}" />
     </div>
     <div class="tx-actions">
-      <button type="button" class="btn btn-primary btn-save" style="text-transform:none; letter-spacing:0;">保存修改</button>
-      <button type="button" class="btn btn-danger btn-del">删除</button>
+      <button type="button" class="btn btn-primary btn-save btn-loading" style="text-transform:none; letter-spacing:0;">保存修改</button>
+      <button type="button" class="btn btn-danger btn-del btn-loading">删除</button>
     </div>
   `;
 
@@ -389,19 +453,29 @@ function renderTx(tx) {
     e.stopPropagation();
     const note = body.querySelector(".edit-note").value;
     const amount = parseFloat(body.querySelector(".edit-amt").value);
+    const type = body.querySelector(`input[name="${typeName}"]:checked`)?.value;
+    const transacted_on = body.querySelector(".edit-date").value;
     if (!(amount > 0)) {
       toast("金额须为大于 0 的数字", true);
       return;
     }
+    if (!transacted_on) {
+      toast("请选择交易日期", true);
+      return;
+    }
+    const btn = body.querySelector(".btn-save");
+    btn.disabled = true;
     try {
       await api(`/api/transactions/${tx.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ note, amount }),
+        body: JSON.stringify({ note, amount, type, transacted_on }),
       });
       toast("已保存");
       await refresh();
     } catch (err) {
       toast(err.message, true);
+    } finally {
+      btn.disabled = false;
     }
   });
 
@@ -416,12 +490,16 @@ function renderTx(tx) {
       danger: true,
     });
     if (!ok) return;
+    const db = body.querySelector(".btn-del");
+    db.disabled = true;
     try {
       await api(`/api/transactions/${tx.id}`, { method: "DELETE" });
       toast("已删除");
       await refresh();
     } catch (err) {
       toast(err.message, true);
+    } finally {
+      db.disabled = false;
     }
   });
 
@@ -466,6 +544,8 @@ function escapeAttr(s) {
 $("#form-login").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const sub = $("#btn-login-submit");
+  sub.disabled = true;
   try {
     await api("/api/auth/login", {
       method: "POST",
@@ -480,16 +560,24 @@ $("#form-login").addEventListener("submit", async (e) => {
     toast("登录成功");
   } catch (err) {
     toast(err.message, true);
+  } finally {
+    sub.disabled = false;
   }
 });
 
 $("#btn-logout").addEventListener("click", async () => {
+  beginBusy();
   try {
     await api("/api/auth/logout", { method: "POST", body: "{}" });
     showLogin();
+    state.keyword = "";
+    const si = $("#input-tx-search");
+    if (si) si.value = "";
     toast("已登出");
   } catch (err) {
     toast(err.message, true);
+  } finally {
+    endBusy();
   }
 });
 
@@ -557,11 +645,16 @@ $("#btn-import")?.addEventListener("click", async () => {
   const fd = new FormData();
   fd.append("platform", plat);
   fd.append("file", fin.files[0], fin.files[0].name);
+  const ib = $("#btn-import");
+  ib.disabled = true;
+  beginBusy();
   try {
+    const csrf = readCookie("ledger_csrf");
     const r = await fetch("/api/transactions/import", {
       method: "POST",
       body: fd,
       credentials: "include",
+      headers: csrf ? { "X-CSRF-Token": csrf } : {},
     });
     const text = await r.text();
     let data = null;
@@ -580,10 +673,14 @@ $("#btn-import")?.addEventListener("click", async () => {
       `导入完成：新增 ${data.inserted} 条，跳过重复 ${data.skipped_duplicate}，不计/状态等已跳过行见服务端统计。`
     );
     closeImportModal();
-    await refresh();
   } catch (err) {
     toast(err.message, true);
+    return;
+  } finally {
+    ib.disabled = false;
+    endBusy();
   }
+  await refresh();
 });
 
 $("#form-add").addEventListener("submit", async (e) => {
@@ -597,6 +694,8 @@ $("#form-add").addEventListener("submit", async (e) => {
     toast("请输入大于 0 的金额", true);
     return;
   }
+  const ab = $("#btn-form-add-submit");
+  ab.disabled = true;
   try {
     await api("/api/transactions", {
       method: "POST",
@@ -611,6 +710,8 @@ $("#form-add").addEventListener("submit", async (e) => {
     await refresh();
   } catch (err) {
     toast(err.message, true);
+  } finally {
+    ab.disabled = false;
   }
 });
 
@@ -744,4 +845,129 @@ document.body.addEventListener("click", (e) => {
   ) {
     setPanelOpen(false);
   }
+});
+
+function openPasswordModal() {
+  setAddSheetOpen(false);
+  const m = $("#password-modal");
+  const f = $("#form-password");
+  if (f) f.reset();
+  if (m) {
+    m.classList.remove("hidden");
+    m.setAttribute("aria-hidden", "false");
+  }
+}
+
+function closePasswordModal() {
+  const m = $("#password-modal");
+  if (m) {
+    m.classList.add("hidden");
+    m.setAttribute("aria-hidden", "true");
+  }
+}
+
+$("#btn-change-password")?.addEventListener("click", () => openPasswordModal());
+$("#password-modal-backdrop")?.addEventListener("click", () =>
+  closePasswordModal()
+);
+$("#password-modal-cancel")?.addEventListener("click", () =>
+  closePasswordModal()
+);
+
+$("#form-password")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const sub = $("#btn-password-submit");
+  sub.disabled = true;
+  beginBusy();
+  try {
+    await api("/api/me/password", {
+      method: "POST",
+      body: JSON.stringify({
+        old_password: fd.get("old_password"),
+        new_password: fd.get("new_password"),
+      }),
+    });
+    closePasswordModal();
+    toast("密码已更新，请牢记新密码");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    sub.disabled = false;
+    endBusy();
+  }
+});
+
+$("#btn-export-csv")?.addEventListener("click", async () => {
+  const qs = (() => {
+    const p = new URLSearchParams();
+    if (state.startDate && state.endDate) {
+      p.set("start_date", state.startDate);
+      p.set("end_date", state.endDate);
+    }
+    const kw = (state.keyword || "").trim();
+    if (kw) p.set("keyword", kw);
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  })();
+  beginBusy();
+  try {
+    const r = await fetch(`/api/transactions/export${qs}`, {
+      credentials: "include",
+    });
+    if (!r.ok) {
+      let msg = r.statusText;
+      try {
+        const j = await r.json();
+        const d = j.detail;
+        msg = Array.isArray(d)
+          ? d.map((x) => x.msg || x).join("; ")
+          : String(d || msg);
+      } catch {
+        msg = (await r.text()) || msg;
+      }
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "ledger-export.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("已开始下载");
+  } catch (err) {
+    toast(err.message || "导出失败", true);
+  } finally {
+    endBusy();
+  }
+});
+
+$("#btn-load-more")?.addEventListener("click", async () => {
+  if (state.txItems.length >= state.txTotal) return;
+  const next = state.txPage + 1;
+  const btn = $("#btn-load-more");
+  btn.disabled = true;
+  beginBusy();
+  try {
+    const txPayload = await api(`/api/transactions${buildTxQuery(next, 50)}`);
+    state.txPage = next;
+    state.txItems = state.txItems.concat(txPayload.items);
+    renderGroupedList(state.txItems);
+    updateLoadMoreUI();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    endBusy();
+  }
+});
+
+let _searchTimer = null;
+$("#input-tx-search")?.addEventListener("input", (e) => {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(async () => {
+    state.keyword = e.target.value;
+    await refresh();
+  }, 320);
 });

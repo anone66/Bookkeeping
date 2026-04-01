@@ -45,6 +45,12 @@
   --toggle-bg: rgba(245, 209, 255, 0.5);
   --item-bg: rgba(255, 255, 255, 0.85);
   --toast-bg: rgba(255, 255, 255, 0.92);
+  /* 全局 z-index：提示项 > 弹框/遮罩 > 悬浮按钮 > 页面（见 .shell-header 等） */
+  --z-fab: 100;
+  --z-modal: 200;
+  --z-form-panel: 210;
+  --z-top-progress: 290;
+  --z-toast: 300;
 }
 
 /* —— 深色（紫调夜空） —— */
@@ -512,6 +518,7 @@ body {
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
+  flex-wrap: wrap;
 }
 
 .panel-title h2 {
@@ -1126,12 +1133,47 @@ body {
 }
 
 /* Toast */
+.top-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: var(--z-top-progress);
+  pointer-events: none;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.top-progress::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 42%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--primary) 85%, white),
+    transparent
+  );
+  animation: top-progress-indeterminate 0.9s ease-in-out infinite;
+}
+
+@keyframes top-progress-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 .toast {
   position: fixed;
   bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%);
-  padding: 0.75rem 1.35rem;
+  padding: 0.75rem 0.85rem 0.75rem 1.2rem;
   border-radius: var(--radius-lg);
   background: var(--toast-bg);
   backdrop-filter: blur(12px);
@@ -1139,12 +1181,82 @@ body {
   color: var(--text);
   font-size: 0.9rem;
   font-weight: 500;
-  z-index: 100;
+  z-index: var(--z-toast);
   box-shadow: 0 20px 40px var(--shadow-tint);
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  max-width: min(92vw, 28rem);
+  cursor: pointer;
+}
+
+.toast #toast-text {
+  flex: 1;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.toast-close {
+  flex-shrink: 0;
+  appearance: none;
+  border: none;
+  background: color-mix(in srgb, var(--outline) 12%, transparent);
+  color: var(--text);
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-md);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.toast-close:hover {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
 }
 
 .toast.err {
   border-color: color-mix(in srgb, var(--tertiary) 45%, transparent);
+}
+
+body.global-busy .btn-loading[disabled] {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.tx-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+  max-width: 16rem;
+}
+
+.tx-search-wrap input {
+  width: 100%;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-lowest);
+  color: var(--text);
+}
+
+.tx-list-more-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1rem 0 0.5rem;
+}
+
+.tx-list-count-hint {
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 /* —— 管理端表格 —— */
@@ -1240,7 +1352,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1502,8 +1614,8 @@ body {
   position: fixed;
   right: 1.1rem;
   bottom: 1.35rem;
-  /* 高于主内容、低于打开中的抽屉与遮罩，避免挡住底部表单 */
-  z-index: 201;
+  /* 高于页面、低于弹框层（--z-modal），避免挡住密码等弹窗 */
+  z-index: var(--z-fab);
   width: 3.5rem;
   height: 3.5rem;
   border: none;
@@ -1528,8 +1640,8 @@ body {
 .sheet-backdrop {
   position: fixed;
   inset: 0;
-  /* 低于抽屉表单、高于页面主内容；与 #view-app 内兄弟层叠一致 */
-  z-index: 200;
+  /* 低于抽屉表单、高于 FAB；与弹框同层基准 */
+  z-index: var(--z-modal);
   background: rgba(62, 37, 72, 0.38);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -1649,8 +1761,8 @@ body {
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     max-height: min(88vh, 100%);
     overflow-y: auto;
-    /* 高于 .fab(201)，避免底部「确定」与悬浮新增钮重叠 */
-    z-index: 210;
+    /* 与弹框同级，高于 --z-fab */
+    z-index: var(--z-modal);
     box-shadow: 0 -12px 48px var(--shadow-tint);
   }
 
@@ -1689,7 +1801,7 @@ body {
     overflow-y: auto;
     margin: 0;
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-    z-index: 202;
+    z-index: var(--z-form-panel);
     transform: translateY(105%);
     visibility: hidden;
     pointer-events: none;
